@@ -3,7 +3,7 @@ from pydantic import BaseModel, EmailStr, constr
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Enum
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from enum import Enum as PyEnum
 
@@ -28,8 +28,8 @@ class Contact(Base):
     email = Column(String, nullable=True)
     linked_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
     link_precedence = Column(Enum(LinkPrecedence), default=LinkPrecedence.PRIMARY)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default= datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default= datetime.now(timezone.utc), onupdate= datetime.now(timezone.utc))
     deleted_at = Column(DateTime, nullable=True)
 
     linked_contact = relationship("Contact", remote_side=[id], backref="linked_contacts")
@@ -37,7 +37,7 @@ class Contact(Base):
 # Request Model
 class IdentifyRequest(BaseModel):
     email: EmailStr | None = None
-    phoneNumber: constr(min_length=10, max_length=15) | None = None
+    phoneNumber: constr(min_length=10, max_length=15,pattern="^\\d+$") | None = None
 
 # Response Model
 class IdentifyResponse(BaseModel):
@@ -60,10 +60,22 @@ def identify(request: IdentifyRequest, db: Session = Depends(get_db)):
     if not request.email and not request.phoneNumber:
         raise HTTPException(status_code=400, detail="At least one of email or phoneNumber must be provided")
     
-    matching_contacts = db.query(Contact).filter(
-        (Contact.email == request.email) | (Contact.phone_number == request.phoneNumber)
-    ).all()
-    
+    query = db.query(Contact)
+
+    if request.email and request.phoneNumber:
+        # Filter by both email and phoneNumber if both are provided
+        query = query.filter(
+            (Contact.email == request.email) | (Contact.phone_number == request.phoneNumber)
+        )
+    elif request.email:
+        # Filter only by email if phoneNumber is None
+        query = query.filter(Contact.email == request.email)
+    elif request.phoneNumber:
+        # Filter only by phoneNumber if email is None
+        query = query.filter(Contact.phone_number == request.phoneNumber)
+
+    matching_contacts = query.all()
+        
     if not matching_contacts:
         # No match, create a new primary contact
         new_contact = Contact(email=request.email, phone_number=request.phoneNumber, link_precedence=LinkPrecedence.PRIMARY)
@@ -91,7 +103,7 @@ def identify(request: IdentifyRequest, db: Session = Depends(get_db)):
     existing_emails = {c.email for c in matching_contacts if c.email} | {c.email for c in secondary_contacts if c.email}
     existing_phones = {c.phone_number for c in matching_contacts if c.phone_number} | {c.phone_number for c in secondary_contacts if c.phone_number}
     
-    if request.email not in existing_emails or request.phoneNumber not in existing_phones:
+    if ((request.email not in existing_emails and request.email is not None) or (request.phoneNumber not in existing_phones and request.phoneNumber is not None)):
         # Create a new secondary contact
         new_secondary = Contact(email=request.email, phone_number=request.phoneNumber, linked_id=primary_contact.id, link_precedence=LinkPrecedence.SECONDARY)
         db.add(new_secondary)
@@ -101,8 +113,8 @@ def identify(request: IdentifyRequest, db: Session = Depends(get_db)):
     
     return IdentifyResponse(
         primaryContactId=primary_contact.id,
-        emails=list(existing_emails),
-        phoneNumbers=list(existing_phones),
+        emails=set([c.email for c in secondary_contacts if c.email]),
+        phoneNumbers=set([c.phone_number for c in secondary_contacts if c.phone_number ]),
         secondaryContactIds=[c.id for c in secondary_contacts],
     )
 

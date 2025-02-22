@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, EmailStr, constr
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Enum
 from sqlalchemy.ext.declarative import declarative_base
@@ -53,6 +53,8 @@ def get_db():
     finally:
         db.close()
 
+
+
 # Identify Endpoint
 @app.post("/identify", response_model=IdentifyResponse)
 def identify(request: IdentifyRequest, db: Session = Depends(get_db)):
@@ -93,15 +95,21 @@ def identify(request: IdentifyRequest, db: Session = Depends(get_db)):
     
     # Find the primary contact
     primary_contact = min(matching_contacts, key=lambda c: c.created_at)
-    if primary_contact.link_precedence == LinkPrecedence.SECONDARY:
-        primary_contact = db.query(Contact).filter(Contact.id == primary_contact.linked_id).first()
-    
-    secondary_contacts = db.query(Contact).filter(Contact.linked_id == primary_contact.id).all()
-    
+    extra_primery_contacts = [x.id for x in matching_contacts if (x.link_precedence==LinkPrecedence.PRIMARY and x.linked_id != primary_contact.id)]
+    secondary_contacts=[]
+    if extra_primery_contacts:
+        for x in extra_primery_contacts:
+            temp_contacts = db.query(Contact).filter(Contact.linked_id == x).all()
+            for x in temp_contacts:
+                if x.linked_id !=primary_contact.id:
+                    x.linked_id = primary_contact.id
+                    x.link_precedence = LinkPrecedence.SECONDARY
+            secondary_contacts.extend(temp_contacts)
+            db.commit()
     # Check if the incoming request data is new
-    existing_emails = {c.email for c in matching_contacts if c.email} | {c.email for c in secondary_contacts if c.email}
-    existing_phones = {c.phone_number for c in matching_contacts if c.phone_number} | {c.phone_number for c in secondary_contacts if c.phone_number}
-    
+    existing_emails = {c.email for c in secondary_contacts if c.email}
+    existing_phones = {c.phone_number for c in secondary_contacts if c.phone_number}
+
     if ((request.email not in existing_emails and request.email is not None) or (request.phoneNumber not in existing_phones and request.phoneNumber is not None)):
         # Create a new secondary contact
         new_secondary = Contact(email=request.email, phone_number=request.phoneNumber, linked_id=primary_contact.id, link_precedence=LinkPrecedence.SECONDARY)

@@ -45,7 +45,7 @@ def test_identify_existing_contact(db_session):
     response = client.post("/identify", json={"email": "existing@example.com"})
     assert response.status_code == 200
     data = response.json()
-    assert "existing@example.com" in data["emails"], f"Expected {contact.email} in {data['emails']}"
+    assert "existing@example.com" in data["emails"]
 
 def test_identify_secondary_contact_creation(db_session):
     primary = Contact(email="primary@example.com", phone_number="2222222222", link_precedence=LinkPrecedence.PRIMARY)
@@ -64,3 +64,5 @@ def test_invalid_request(db_session):
     response = client.post("/identify", json={})
     assert response.status_code == 400
     assert response.json()["detail"] == "At least one of email or phoneNumber must be provided"
+
+
